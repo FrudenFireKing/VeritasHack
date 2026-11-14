@@ -1,0 +1,86 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --radius: 0.25rem;
+  --olive-ink: #12160d;
+  --olive-surface: #191f11;
+  --olive-surface-2: #202816;
+  --olive-line: #a3b18a29;
+  --olive-line-strong: #a3b18a52;
+  --cream: #efeddc;
+  --cream-dim: #b9b9a2;
+  --sage: #a3b18a;
+  --gold: #c9b26b;
+  --terra: #c47a5a;
+  --rust: #c4553f;
+
+  --background: #12160d;
+  --foreground: #efeddc;
+  --card: #191f11;
+  --card-foreground: #efeddc;
+  --primary: #a3b18a;
+  --primary-foreground: #141809;
+  --secondary: #232b17;
+  --secondary-foreground: #d9d7c3;
+  --muted: #1e2513;
+  --muted-foreground: #a4a78f;
+  --accent: #2a331c;
+  --accent-foreground: #efeddc;
+  --destructive: #c4553f;
+  --border: #a3b18a29;
+  --input: #a3b18a3d;
+  --ring: #a3b18a;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-background text-foreground font-body antialiased;
+  }
+
+  ::selection {
+    background: var(--sage);
+    color: var(--olive-ink);
+  }
+
+  ::placeholder {
+    color: var(--muted-foreground);
+    opacity: 0.72;
+  }
+}
+
+@layer components {
+  /* Small letter-spaced caps — the atelier's signature style */
+  .eyebrow {
+    @apply uppercase;
+    letter-spacing: 0.38em;
+    text-transform: uppercase;
+    color: var(--muted-foreground);
+    font-size: 10.5px;
+    font-weight: 500;
+  }
+
+  /* Thin decorative line */
+  .rule {
+    background: linear-gradient(90deg, transparent, var(--olive-line-strong), transparent);
+    height: 1px;
+  }
+
+  /* Background light pools of the page */
+  .ornament {
+    background:
+      radial-gradient(60% 50% at 50% 0%, #a3b18a17, transparent 70%),
+      radial-gradient(50% 40% at 85% 90%, #c9b26b0d, transparent 70%);
+  }
+
+  /* Thin card border */
+  .panel {
+    @apply border border-border bg-card;
+    border-radius: var(--radius);
+  }
+}
