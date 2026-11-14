@@ -10,7 +10,7 @@ export default function Footer() {
           <span className="eyebrow">est. 2026</span>
         </p>
         <p className="text-xs text-muted-foreground text-center">
-          Built overnight at the AI Inator hackathon · Tavily track: Stale-Answer Detector
+          Tavily track: Stale-Answer Detector
         </p>
         <p className="text-xs text-muted-foreground">© 2026 Veritas Atelier</p>
       </div>

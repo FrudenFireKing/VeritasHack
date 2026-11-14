@@ -12,7 +12,7 @@ export default function Hero() {
     <section className="max-w-6xl mx-auto px-4 md:px-6 pt-16 md:pt-24 pb-10">
       <div className="grid lg:grid-cols-[1.15fr_0.85fr] gap-12 items-center">
         <div className="animate-rise-in">
-          <p className="eyebrow">AI Inator · an overnight pilot build · November 2026</p>
+          <p className="eyebrow">Veritas · November 2026</p>
           <h1 className="font-display text-5xl md:text-7xl leading-[1.05] mt-6 text-cream">
             Truth has a
             <br />
