@@ -60,7 +60,8 @@ The batch index is the average across claims, rendered on one gauge — from *Fi
 
 **The Laboratory** — paste an AI answer or ask the built-in assistant; five crafted samples make the demo one click deep.
 
-![The VERITAS Laboratory](docs/img-lab.png)
+![The VERITAS Laboratory1](docs/img-lab-type1.png)
+![The VERITAS Laboratory2](docs/img-lab-type2.png)
 
 **The Report** — every claim gets a verdict chip, a confidence score, a plain-language explanation, a *Fresher Data* block with the corrected fact, and a numbered evidence list with source years.
 
