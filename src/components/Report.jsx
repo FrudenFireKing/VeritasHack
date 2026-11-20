@@ -1,5 +1,6 @@
 import React from 'react'
 import { VERDICT_META } from '../lib/demoEngine.js'
+import { reportToMarkdown, downloadText, exportStamp } from '../lib/exporters.js'
 
 const fmtFull = new Intl.DateTimeFormat('en-GB', {
   day: '2-digit',
@@ -83,6 +84,7 @@ function ClaimCard({ claim, isLive }) {
         <Chip color={isLive ? '#a3b18a' : '#c9b26b'}>
           {isLive ? 'Live Evidence' : 'Demo Evidence'}
         </Chip>
+        {claim.evaluator === 'llm' && <Chip color="#c9b26b">AI Assessed</Chip>}
       </div>
       <h4 className="font-display text-xl md:text-2xl text-cream mt-4 leading-snug">
         &ldquo;{claim.claim}&rdquo;
@@ -104,10 +106,24 @@ function ClaimCard({ claim, isLive }) {
               <span className="text-muted-foreground text-xs tabular-nums">
                 {String(i + 1).padStart(2, '0')}
               </span>
-              <span className="text-cream underline decoration-olive-line-strong underline-offset-4">
-                {e.title}
-              </span>
+              {e.url ? (
+                <a
+                  href={e.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-cream underline decoration-olive-line-strong underline-offset-4 hover:text-sage transition-colors"
+                >
+                  {e.title}
+                </a>
+              ) : (
+                <span className="text-cream italic">{e.title}</span>
+              )}
               <span className="text-muted-foreground">— {e.year}</span>
+              {!e.url && (
+                <span className="text-[10px] tracking-[0.12em] uppercase text-muted-foreground">
+                  archived record · link unavailable
+                </span>
+              )}
             </li>
           ))}
         </ul>
@@ -130,10 +146,31 @@ export default function Report({ report }) {
           <Chip color={report.mode === 'live' ? '#a3b18a' : '#c9b26b'}>
             {report.mode === 'live' ? 'Live Web' : 'Demo Archive'}
           </Chip>
+          {report.aiAssessed > 0 && (
+            <Chip color="#c9b26b">
+              AI Assessed {report.aiAssessed}/{report.claims.length}
+            </Chip>
+          )}
           <span className="px-2.5 py-1 border border-border text-[10.5px] tracking-[0.14em] uppercase text-muted-foreground tabular-nums">
             {report.elapsedSec} s
           </span>
         </div>
+      </div>
+
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <span className="eyebrow text-muted-foreground">Export:</span>
+        <button
+          onClick={() => downloadText(`veritas-report_${exportStamp(report.examinedAt)}.md`, reportToMarkdown(report), 'text/markdown')}
+          className="px-3 py-1.5 border border-border text-[11px] tracking-[0.12em] uppercase text-cream-dim hover:text-cream hover:border-olive-line-strong transition-colors"
+        >
+          Markdown
+        </button>
+        <button
+          onClick={() => downloadText(`veritas-report_${exportStamp(report.examinedAt)}.json`, JSON.stringify(report, null, 2), 'application/json')}
+          className="px-3 py-1.5 border border-border text-[11px] tracking-[0.12em] uppercase text-cream-dim hover:text-cream hover:border-olive-line-strong transition-colors"
+        >
+          JSON
+        </button>
       </div>
 
       <div className="rule my-8" />

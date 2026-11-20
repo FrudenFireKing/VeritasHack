@@ -8,17 +8,19 @@
 
 [![Stack](https://img.shields.io/badge/React_18_%C2%B7_Vite_%C2%B7_Tailwind-frontend-191F11?style=flat-square&labelColor=191F11&color=C9B26B)](#architecture)
 [![Server](https://img.shields.io/badge/Node_%C2%B7_Express-API_server-191F11?style=flat-square&labelColor=191F11&color=C9B26B)](#architecture)
-[![Evidence](https://img.shields.io/badge/Tavily_Search-live_web_evidence-191F11?style=flat-square&labelColor=191F11&color=C9B26B)](#how-the-audit-works)
-[![Assessor](https://img.shields.io/badge/LLM_assessor-OpenAI--compatible-191F11?style=flat-square&labelColor=191F11&color=C9B26B)](#architecture)
+[![Evidence](https://img.shields.io/badge/Tavily_Search-dated_live_evidence-191F11?style=flat-square&labelColor=191F11&color=C9B26B)](#powered-by-tavily--bifrost)
+[![Gateway](https://img.shields.io/badge/Bifrost_by_Maxim_AI-assessor_gateway-191F11?style=flat-square&labelColor=191F11&color=C9B26B)](#powered-by-tavily--bifrost)
+[![Tests](https://img.shields.io/badge/vitest-52_tests_passing-191F11?style=flat-square&labelColor=191F11&color=C9B26B)](#testing--ci)
+[![License](https://img.shields.io/badge/License-MIT-191F11?style=flat-square&labelColor=191F11&color=C9B26B)](#license)
 
 **Built for the Geek Room Global AI Hackathon 2026 — Tavily Track**
-*“Build a Stale-Answer Detector for AI Applications”*
+*“Build a Stale-Answer Detector for AI Applications” — powered by Tavily and Bifrost*
 
 ---
 
 </div>
 
-AI models answer in fluent, confident prose — but the world they describe was frozen at their training cutoff. VERITAS is a **stale-answer detector**: paste any AI answer, and the atelier extracts its checkable claims, verifies each one against **dated evidence from the live web** via Tavily, and pours the whole batch into a single **0–100 freshness index** — with a verdict, a confidence score and real sources for every claim. No “take our word for it”. Only dated evidence.
+AI models answer in fluent, confident prose — but the world they describe was frozen at their training cutoff. VERITAS is a **stale-answer detector**: paste any AI answer, and the atelier extracts its checkable claims, verifies each one against **dated evidence from the live web** via Tavily, judges every claim through the **Bifrost gateway** with an LLM assessor, and pours the whole batch into a single **0–100 freshness index** — with a verdict, a confidence score and **clickable dated sources** for every claim. No “take our word for it”. Only dated evidence, one click away.
 
 ---
 
@@ -38,10 +40,10 @@ The pattern never changes: **confident text, outdated or invented facts — and 
 
 | Step | What happens |
 |---|---|
-| **01 · Extract the claims** | A dependency-free splitter pulls up to five checkable sentences from the answer and tags each one: ranking, statistic, version, date or status. |
-| **02 · Search the live web** | The [Tavily Search API](https://tavily.com) gathers up to four dated sources per claim; snippets are kept verbatim as evidence. |
-| **03 · Judge the freshness** | An LLM assessor reads *claim vs. evidence* and replies in strict JSON: `FRESH`, `STALE`, `CONTRADICTED` or `UNCONFIRMED`. A publication-date heuristic stands guard as a fallback, so the audit never breaks. |
-| **04 · Bind the report** | Verdicts, confidence scores, fresher facts and evidence merge into one 0–100 freshness index. A full batch audit completes in about three seconds. |
+| **01 · Extract the claims** | A dependency-free splitter pulls up to five checkable sentences and tags each one — including the track's own classes: **pricing, API/software versions, regulations, company facts**, plus ranking, statistic, date and status. Lowercase sentence starts (`macOS…`, `iPhone…`) are handled, so two facts never share one verdict. |
+| **02 · Search the live web** | The [Tavily Search API](https://tavily.com) gathers up to four dated sources per claim with `search_depth: "advanced"`. Version claims are steered first to **official vendor domains** (`include_domains`: microsoft.com, apple.com, python.org…). Every search is cached for 20 minutes and the route is rate-limited. |
+| **03 · Judge the freshness** | An LLM assessor — routed through the **Bifrost gateway** — reads *claim vs. evidence* and replies in strict JSON: `FRESH`, `STALE`, `CONTRADICTED` or `UNCONFIRMED`. The prompt carries a **speculation guard**: an article discussing *whether* X will happen is not confirmation of X. A publication-date heuristic stands guard as a fallback, so the audit never breaks. |
+| **04 · Bind the report** | Verdicts, confidence scores, fresher facts and numbered, **clickable** evidence merge into one 0–100 freshness index — exportable as Markdown or JSON with one click, and fully re-openable from the archive. |
 
 ## The verdict scale — poured like wine
 
@@ -54,16 +56,36 @@ The pattern never changes: **confident text, outdated or invented facts — and 
 
 The batch index is the average across claims, rendered on one gauge — from *Fit to Bottle* to *Unfit to Bottle*.
 
+## Powered by Tavily + Bifrost
+
+The track asks for **both** partners, and each plays a distinct role in the pipeline:
+
+| Partner | Role in VERITAS |
+|---|---|
+| **Tavily** (by Nebius) | The evidence engine. Every claim is re-verified against the live web with `search_depth: "advanced"`; version claims get a first attempt restricted to official vendor domains via `include_domains`; snippets are kept verbatim; publication dates are trusted only when Tavily actually returns one. |
+| **Bifrost** (by Maxim AI) | The assessor's route. [Bifrost](https://github.com/maximhq/bifrost) is the track's open-source AI gateway with an OpenAI-compatible API — point `BIFROST_BASE_URL` at a Bifrost deployment and every LLM call is routed, logged, rate-governed and model-switchable without touching VERITAS code. |
+
+```bash
+# .env — assessor through the Bifrost gateway (default gateway port is 8080)
+TAVILY_API_KEY=tvly-…                          # dated live evidence
+BIFROST_BASE_URL=http://localhost:8080/v1      # your Bifrost deployment
+BIFROST_API_KEY=…                              # gateway / upstream key
+BIFROST_MODEL=gpt-4o-mini                      # any model the gateway exposes
+# BIFROST_AUTH=basic                           # only when panel authentication is enabled in Bifrost
+#                                              # then BIFROST_API_KEY = base64("admin:password") from the UI
+```
+
+Every assessor call shows up in the Bifrost gateway logs — model, tokens, latency — and direct OpenAI-compatible endpoints (`LLM_BASE_URL`) still work as a legacy fallback. Without any LLM key the audit stays functional on the date heuristic. If you enable **panel authentication** in Bifrost, set `BIFROST_AUTH=basic` and put the base64-encoded admin credentials shown by the Bifrost UI (`base64("admin:password")`) into `BIFROST_API_KEY` — the assessor then addresses the gateway with `Authorization: Basic …`.
+
 ## Product tour
 
 <div align="center">
 
-**The Laboratory** — paste an AI answer or ask the built-in assistant; five crafted samples make the demo one click deep.
+**The Laboratory** — paste an AI answer or ask the built-in (clearly scripted) assistant; five crafted samples make the demo one click deep.
 
-![The VERITAS Laboratory1](docs/img-lab-type1.png)
-![The VERITAS Laboratory2](docs/img-lab-type2.png)
+![The VERITAS Laboratory](docs/img-lab.png)
 
-**The Report** — every claim gets a verdict chip, a confidence score, a plain-language explanation, a *Fresher Data* block with the corrected fact, and a numbered evidence list with source years.
+**The Report** — every claim gets a verdict chip, a confidence score, a plain-language explanation, a *Fresher Data* block with the corrected fact, numbered evidence with **real links**, and one-click Markdown/JSON export.
 
 ![The VERITAS Report](docs/img-report.png)
 
@@ -71,25 +93,63 @@ The batch index is the average across claims, rendered on one gauge — from *Fi
 
 ## Architecture
 
+```
+                    ┌─────────────────────────────────────────────┐
+                    │                The Atelier                  │
+                    │        React 18 · Vite · Tailwind           │
+                    │    Laboratory → Process → Report → Archive  │
+                    └──────────────────┬──────────────────────────┘
+                                       │  POST /api/audit · GET /api/health
+                    ┌──────────────────▼──────────────────────────┐
+                    │              Express server                 │
+                    │     rate-limit (40/15 min) · TTL cache      │
+                    │   extract.js — 8 claim classes, 5 per batch │
+                    └───────────────┬─────────────┬───────────────┘
+        dated evidence (advanced)   │             │  claim + evidence
+                                    ▼             ▼
+                        ┌──────────────┐   ┌─────────────────────┐
+                        │    Tavily    │   │   Bifrost gateway   │
+                        │ search,      │   │  OpenAI-compatible  │
+                        │ vendor       │   │  /v1/chat/complet.  │
+                        │ domains      │   └──────────┬──────────┘
+                        └──────────────┘              │
+                                                      ▼
+                                            ┌──────────────────┐
+                                            │  LLM assessor    │
+                                            │  temperature 0 · │
+                                            │  strict JSON ·   │
+                                            │ speculation guard│
+                                            └──────────────────┘
+                  fallbacks: no LLM → publication-date heuristic ·
+                             no Tavily → Demo Archive (synthetic evidence)
+```
+
 | Layer | Choice | Notes |
 |---|---|---|
 | Frontend | React 18 · Vite · Tailwind | The atelier itself: laboratory, process, archive. |
-| API server | Node · Express | `POST /api/audit` — claims in, verdicts out. |
-| Evidence | Tavily Search API | Dated live sources for every claim. |
-| Assessor | Any OpenAI-compatible LLM | Temperature 0, strict-JSON verdicts; the endpoint is configurable, so any gateway drops straight in. |
+| API server | Node · Express | `POST /api/audit` — claims in, verdicts out; rate-limited and search-cached. |
+| Evidence | Tavily Search API | Dated live sources for every claim; vendor-domain steering for versions. |
+| Gateway | Bifrost by Maxim AI | Every assessor call routed through the track's required gateway. |
+| Assessor | Any OpenAI-compatible LLM | Temperature 0, strict-JSON verdicts, speculation guard, vendor-confidence cap. |
 | Fallback | Publication-date heuristic | If the model is unreachable, verdicts stay conservative — never broken. |
 | Privacy | Server-side `.env` | Keys never reach the browser or the repository. |
 
 ```
 veritas-hack/
-├── server/server.mjs      # live-mode server: /api/health, /api/audit
+├── server/server.mjs          # live-mode server: /api/health, /api/audit
 ├── src/
-│   ├── lib/extract.js     # claim extraction & classification (shared)
-│   ├── lib/demoEngine.js  # honest demo mode without any keys
-│   ├── lib/api.js         # audit client with staged progress
-│   └── components/        # Hero, Lab, Report, Archive, Process…
-├── docs/                  # screenshots
-└── .env.example           # copy as .env and add your keys
+│   ├── lib/extract.js         # claim extraction & 8-class classification (shared)
+│   ├── lib/audit-core.js      # queries, vendor domains, verdicts, assessor prompt
+│   ├── lib/demoEngine.js      # honest demo mode without any keys
+│   ├── lib/demoArchive.js     # synthetic evidence archive for demo mode
+│   ├── lib/exporters.js       # Markdown / JSON report export
+│   ├── lib/api.js             # audit client with staged progress
+│   └── components/            # Hero, Lab, Report, Archive, Process…
+├── tests/                     # vitest: extract, verdicts, exporters + E2E server harness
+├── .github/workflows/ci.yml   # CI: npm ci → npm test → npm run build
+├── docs/                      # screenshots
+├── LICENSE                    # MIT
+└── .env.example               # copy as .env — Tavily + Bifrost + port
 ```
 
 ## Quickstart
@@ -100,11 +160,15 @@ npm install
 
 # 2. configure
 cp .env.example .env
-#    TAVILY_API_KEY=tvly-…        → enables LIVE mode
-#    LLM_API_KEY / LLM_BASE_URL / LLM_MODEL   (optional)
-#      any OpenAI-compatible endpoint: Groq, OpenRouter, Gemini, …
+#    TAVILY_API_KEY=tvly-…          → enables LIVE mode
+#    BIFROST_BASE_URL/BIFROST_API_KEY/BIFROST_MODEL
+#      → assessor routed through the Bifrost gateway (track requirement)
+#    (legacy LLM_API_KEY / LLM_BASE_URL / LLM_MODEL still work)
 
-# 3. build & serve (http://localhost:8787)
+# 3. test (52 vitest tests — unit + E2E with mocked upstreams)
+npm test
+
+# 4. build & serve (http://localhost:8787)
 npm run build
 npm start
 ```
@@ -113,23 +177,40 @@ For frontend development use `npm run dev` (Vite on :5173) alongside `npm start`
 
 | Mode | Trigger | Behaviour |
 |---|---|---|
-| **Live Web** | `TAVILY_API_KEY` present | Real Tavily searches; LLM assessor if configured, date-heuristic otherwise. |
+| **Live Web** | `TAVILY_API_KEY` present | Real Tavily searches; Bifrost-routed LLM assessor if configured, date-heuristic otherwise. |
 | **Demo Archive** | no key | Runs honestly on a synthetic evidence archive — every interactive feature still works. |
 
-## The road ahead
+## Testing & CI
 
-- **Now — hackathon prototype:** web laboratory with paste & ask modes, live Tavily audits with LLM assessor, heuristic fallback, demo archive.
-- **Next — product surface:** REST API so any app can call the audit; a browser extension that scores AI text on any page; a gateway plugin so LLM responses carry freshness headers.
-- **Later — ecosystem:** freshness dashboards for content teams, claim-level evidence inside chat UIs, multilingual claims and regional sources.
+```bash
+npm test        # vitest, 52 tests across four suites
+```
+
+- **extract** — sentence splitting (including the lowercase-start regression), claim classes, limits, ordering;
+- **verdicts** — search-query building, publication-year sanitisation, vendor-domain mapping, heuristic verdicts, strict LLM-JSON parsing, the speculation-guard prompt, the wine scale;
+- **exporters** — Markdown rendering with links and archived-record markers;
+- **e2e.server** — the full pipeline, end to end: the real `server/server.mjs` is spawned against **mocked Tavily and Bifrost upstreams** and the harness asserts Bifrost gateway routing, the speculation-guard prompt, advanced search depth, official vendor-domain steering, the vendor-confidence cap (LLM and heuristic paths), the TTL search cache, the date-heuristic fallback on upstream failure, Bearer/Basic gateway authentication, and the 40-per-15-minutes rate limit.
+
+GitHub Actions runs the suite and a production build on every push (`.github/workflows/ci.yml`).
+
+## Honest limits, then the road ahead
+
+Today's prototype audits **up to 5 claims per batch and 6,000 characters per manuscript**, and claim extraction is **English-first** — deliberate scope for the hackathon window, declared here rather than hidden.
+
+- **Now — hackathon prototype:** web laboratory with paste & ask modes, Tavily + Bifrost live audits, heuristic fallback, demo archive, report export, a 52-test suite (unit + E2E) and CI.
+- **Next — product surface:** a REST API so any app can call the audit; a browser extension that scores AI text on any page; a **Bifrost plugin** that stamps freshness headers onto gateway responses; LLM-assisted claim extraction (regex stays as fallback); a FreshQA-style eval harness publishing per-verdict precision/recall.
+- **Later — ecosystem:** freshness dashboards for content teams, claim-level evidence inside chat UIs, layered source weighting (vendor → aggregators → blogs), multilingual claims and regional sources.
 
 ---
+
+## License
+
+Released under the [MIT License](LICENSE) — use it, fork it, bottle it.
 
 <div align="center">
 
 **The question is no longer whether AI can write it — but whether it is still true.**
 
 *VERITAS · AI INATOR · Geek Room Global AI Hackathon 2026, Tavily Track*
-
-Working prototype — the laboratory, the live audit and the archive are ready for the jury.
 
 </div>

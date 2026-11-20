@@ -4,14 +4,15 @@
  * What it does:
  *   1. Serves the built frontend from dist/ (production).
  *   2. /api/health — tells the frontend whether a Tavily key exists (live/demo mode)
- *      and whether an LLM assessor is configured.
+ *      and whether an LLM assessor is configured (and through which gateway).
  *   3. /api/audit — accepts text, extracts claims, searches live sources
  *      through Tavily, then judges every claim:
- *        - with an LLM (any OpenAI-compatible API) when LLM_API_KEY is set, or
+ *        - with an LLM routed through the Bifrost gateway (track requirement)
+ *          or any other OpenAI-compatible endpoint, and
  *        - with the publication-date heuristic as a fallback.
  *
- * The TAVILY_API_KEY and LLM_API_KEY are read from the .env file in the project
- * root. .env is listed in .gitignore — the keys NEVER reach the frontend or git.
+ * Keys are read from the .env file in the project root. .env is listed in
+ * .gitignore — the keys NEVER reach the frontend or git.
  *
  * Run:    npm start        (after npm run build)
  * Port:   8787
@@ -22,9 +23,20 @@ import { readFileSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { extractClaims } from '../src/lib/extract.js'
+import {
+  buildQueries,
+  pickPublicationYear,
+  domainsForClaim,
+  hasVendorSource,
+  verdictFromEvidence,
+  buildLlmMessages,
+  parseLlmVerdict,
+  verdictLabel,
+} from '../src/lib/audit-core.js'
 
 const require = createRequire(import.meta.url)
 const express = require('express')
+const rateLimit = require('express-rate-limit')
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
@@ -42,14 +54,34 @@ loadEnv()
 
 const TAVILY_KEY = process.env.TAVILY_API_KEY || ''
 const TAVILY_URL = process.env.TAVILY_BASE_URL || 'https://api.tavily.com/search'
-// Optional LLM assessor: any OpenAI-compatible chat completions endpoint.
-const LLM_KEY = process.env.LLM_API_KEY || ''
-const LLM_URL = (process.env.LLM_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '')
-const LLM_MODEL = process.env.LLM_MODEL || 'gpt-4o-mini'
+
+// ── Assessor endpoint: Bifrost first (track requirement), then any gateway ──
+// Bifrost by Maxim AI is an open-source AI gateway exposing an OpenAI-compatible
+// API (default http://localhost:8080/v1/chat/completions). Point BIFROST_BASE_URL
+// at a Bifrost deployment and every assessor call is routed, logged and governed
+// by the gateway instead of hitting a model vendor directly.
+const BIFROST_URL = (process.env.BIFROST_BASE_URL || '').replace(/\/$/, '')
+// BIFROST_AUTH selects the Authorization header style: 'bearer' (default) sends
+// `Bearer <BIFROST_API_KEY>`; 'basic' sends `Basic <BIFROST_API_KEY>` — used when
+// panel authentication is enabled in Bifrost, where the gateway expects
+// Basic credentials (base64 of "admin:password", shown in the Bifrost UI).
+const BIFROST_AUTH = (process.env.BIFROST_AUTH || 'bearer').toLowerCase() === 'basic' ? 'basic' : 'bearer'
+const LLM_KEY = process.env.BIFROST_API_KEY || process.env.LLM_API_KEY || ''
+const LLM_URL = BIFROST_URL || (process.env.LLM_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '')
+const LLM_MODEL = process.env.BIFROST_MODEL || process.env.LLM_MODEL || 'gpt-4o-mini'
 const PORT = process.env.PORT || 8787
 
 const app = express()
 app.use(express.json({ limit: '64kb' }))
+
+// ── Rate limiting: the public audit route must not burn the Tavily quota ──
+const auditLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 40,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'rate limit reached: too many audits from this address, try again in a few minutes' },
+})
 
 // IMPORTANT: API routes are registered BEFORE the static file serving,
 // otherwise the '*' catch-all would intercept /api/* and live mode would never activate.
@@ -60,33 +92,80 @@ app.get('/api/health', (_req, res) => {
     mode: TAVILY_KEY ? 'live' : 'demo',
     tavily: Boolean(TAVILY_KEY),
     ai: Boolean(LLM_KEY),
+    gateway: BIFROST_URL ? 'bifrost' : LLM_KEY ? 'direct' : 'none',
   })
 })
 
+// ── TTL cache for Tavily searches (jury fix V8) ────────────────────────
+// Repeated audits of the same text should not pay the full search price —
+// and the public endpoint must not be able to drain the quota either.
+const CACHE_TTL_MS = 20 * 60 * 1000
+const CACHE_MAX_ENTRIES = 300
+const searchCache = new Map()
+
+function cacheGet(key) {
+  const hit = searchCache.get(key)
+  if (!hit) return null
+  if (Date.now() > hit.expires) {
+    searchCache.delete(key)
+    return null
+  }
+  return hit.value
+}
+
+function cacheSet(key, value) {
+  if (searchCache.size >= CACHE_MAX_ENTRIES) {
+    // evict the oldest entry (insertion order)
+    searchCache.delete(searchCache.keys().next().value)
+  }
+  searchCache.set(key, { value, expires: Date.now() + CACHE_TTL_MS })
+}
+
 // ── Evidence search in Tavily ──────────────────────────────────────────
-async function searchEvidence(query, maxResults = 4) {
-  const res = await fetch(TAVILY_URL, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${TAVILY_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      query,
-      max_results: maxResults,
-      include_answer: 'basic',
-    }),
-    signal: AbortSignal.timeout(8000),
-  })
-  if (!res.ok) throw new Error(`tavily ${res.status}`)
+async function searchEvidence(query, maxResults = 4, includeDomains = null) {
+  const cacheKey = `${includeDomains ? includeDomains.join('|') : '*'}::${query}`
+  const cached = cacheGet(cacheKey)
+  if (cached) return cached
+
+  let res
+  try {
+    res = await fetch(TAVILY_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${TAVILY_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        query,
+        max_results: maxResults,
+        include_answer: 'basic',
+        search_depth: 'advanced', // deeper content extraction → better dating (jury fix V5)
+        ...(includeDomains ? { include_domains: includeDomains } : {}),
+      }),
+      signal: AbortSignal.timeout(10000),
+    })
+  } catch (err) {
+    // Network/DNS/timeout failures — name the cause instead of a silent empty set
+    throw new Error(`network: ${err?.cause?.code || err.name || 'fetch failed'}`)
+  }
+  if (!res.ok) {
+    let detail = ''
+    try {
+      detail = (await res.text()).replace(/\s+/g, ' ').slice(0, 160)
+    } catch {}
+    console.warn(
+      `[veritas] tavily HTTP ${res.status} for query "${query.slice(0, 60)}…"${detail ? ` — ${detail}` : ''}`
+    )
+    throw new Error(`tavily HTTP ${res.status}${detail ? `: ${detail}` : ''}`)
+  }
   const data = await res.json()
-  return (data.results || []).map((r) => {
-    // Publication date: Tavily does not always return one — then look for the year in the snippet
-    let year = r.published_date ? String(r.published_date).slice(0, 4) : null
-    if (!year) {
-      const m = String(r.content || '').match(/\b(20\d{2}|19\d{2})\b/)
-      year = m ? m[1] : 'n.d.'
-    }
+  if ((data.results || []).length === 0) {
+    console.log(`[veritas] tavily: 0 results for "${query.slice(0, 60)}…"`)
+  }
+  const evidence = (data.results || []).map((r) => {
+    // Publication date: only a real published_date counts — a year scraped from
+    // a snippet is guesswork, so anything absent/implausible becomes "n.d."
+    const year = pickPublicationYear(r.published_date)
     return {
       title: r.title || 'Untitled source',
       year,
@@ -95,129 +174,26 @@ async function searchEvidence(query, maxResults = 4) {
       snippet: String(r.content || '').slice(0, 400),
     }
   })
+  cacheSet(cacheKey, evidence)
+  return evidence
 }
 
 /**
- * Freshness heuristic without an LLM: if the sources carry dates and they are
- * fresh — the claim holds; if only old ones — it went stale; with conflicting
- * dates — flag it. An honest pilot: without a model, verdicts stay conservative.
+ * Freshness heuristic without an LLM lives in src/lib/audit-core.js
+ * (verdictFromEvidence) so the vitest suite can exercise it headlessly.
  */
-function verdictFromEvidence(claim, evidence, nowYear) {
-  if (evidence.length === 0) {
-    return {
-      verdict: 'UNCONFIRMED',
-      confidence: 30,
-      explanation: 'Live search returned no usable sources for this claim.',
-      fresher: null,
-    }
-  }
-  const years = evidence.map((e) => parseInt(e.year, 10)).filter((y) => !Number.isNaN(y))
-  const freshest = Math.max(...years, 0)
-  const oldest = Math.min(...years, nowYear)
-  const age = nowYear - freshest
-  const currentYearMention = new RegExp(`\\b${nowYear}\\b`).test(claim)
 
-  if (currentYearMention && age > 1) {
-    return {
-      verdict: 'CONTRADICTED',
-      confidence: 70,
-      explanation: `The claim asserts ${nowYear}, but the freshest live evidence found is from ${freshest}.`,
-      fresher: evidence[0]?.title ? `Latest source on record: "${evidence[0].title}" (${freshest}).` : null,
-    }
-  }
-  if (age <= 1) {
-    return {
-      verdict: 'FRESH',
-      confidence: 75,
-      explanation: `Live sources from ${freshest} corroborate the claim; nothing fresher contradicts it.`,
-      fresher: null,
-    }
-  }
-  if (age <= 3) {
-    return {
-      verdict: 'STALE',
-      confidence: 60,
-      explanation: `The freshest live evidence is ${freshest}; the claim may have drifted since (oldest source: ${oldest}).`,
-      fresher: evidence[0]?.title ? `Latest source on record: "${evidence[0].title}" (${freshest}).` : null,
-    }
-  }
-  return {
-    verdict: 'STALE',
-    confidence: 45,
-    explanation: `All live evidence predates ${nowYear - 2}: the claim is drawn from an older snapshot of the world.`,
-    fresher: null,
-  }
-}
-
-// ── LLM assessment of a claim against live evidence ────────────────
-// Any OpenAI-compatible chat completions endpoint works:
+// ── LLM assessment of a claim against live evidence ────────────────────
+// The assessor talks to the Bifrost gateway (BIFROST_BASE_URL) when configured,
+// otherwise to any OpenAI-compatible endpoint (LLM_BASE_URL).
 // OpenAI, Groq, OpenRouter, Gemini (OpenAI-compat mode), local Ollama, etc.
-const VERDICTS = new Set(['FRESH', 'STALE', 'CONTRADICTED', 'UNCONFIRMED'])
-
-function buildLlmMessages(claim, evidence, nowYear) {
-  const evidenceText = evidence
-    .map((e, i) => `- [${i + 1}] (${e.year}) ${e.title}: ${e.snippet || 'no snippet'}`)
-    .join('\n')
-  return [
-    {
-      role: 'system',
-      content:
-        `You are the freshness auditor of VERITAS, a stale-answer detector for AI-generated answers. ` +
-        `Today's year is ${nowYear}. You receive one claim taken from an AI answer and live web evidence ` +
-        `(title, publication year, snippet) found by the Tavily search engine.\n` +
-        `Judge ONLY the temporal accuracy of the claim against this evidence:\n` +
-        `- "FRESH": recent evidence corroborates the claim as still accurate today;\n` +
-        `- "STALE": the claim was once true but evidence shows the fact has aged, changed or drifted;\n` +
-        `- "CONTRADICTED": evidence directly refutes the claim;\n` +
-        `- "UNCONFIRMED": evidence is irrelevant or insufficient to judge.\n` +
-        `Respond with ONLY a minified JSON object, no markdown fences, no extra text, in this exact shape:\n` +
-        `{"verdict":"FRESH|STALE|CONTRADICTED|UNCONFIRMED","confidence":<integer 0-100>,` +
-        `"explanation":"<one short sentence citing the freshest source year>",` +
-        `"fresher":"<the corrected up-to-date fact with its year, or null>"}`,
-    },
-    {
-      role: 'user',
-      content: `Claim: "${claim}"\n\nLive evidence:\n${evidenceText}`,
-    },
-  ]
-}
-
-/** Extracts a strict verdict object from an LLM reply that may contain prose or fences. */
-function parseLlmVerdict(raw) {
-  const text = String(raw || '')
-  const start = text.indexOf('{')
-  const end = text.lastIndexOf('}')
-  if (start === -1 || end <= start) throw new Error('no JSON in LLM reply')
-  const parsed = JSON.parse(text.slice(start, end + 1))
-  const verdict = String(parsed.verdict || '').toUpperCase()
-  if (!VERDICTS.has(verdict)) throw new Error(`bad verdict: ${verdict}`)
-  const confidence = Math.max(0, Math.min(100, Math.round(Number(parsed.confidence) || 0)))
-  const fresherRaw = parsed.fresher
-  const fresher =
-    fresherRaw && String(fresherRaw).trim().toLowerCase() !== 'null'
-      ? String(fresherRaw).slice(0, 240)
-      : null
-  return {
-    verdict,
-    confidence,
-    explanation: String(parsed.explanation || 'Assessed by the LLM against live evidence.').slice(0, 300),
-    fresher,
-    evaluator: 'llm',
-  }
-}
-
-/**
- * Judges a claim with the configured LLM. Returns null on any failure —
- * the caller then falls back to the date heuristic, so a broken LLM key
- * never breaks the audit.
- */
 async function evaluateWithLLM(claim, evidence, nowYear) {
   if (!LLM_KEY || evidence.length === 0) return null
   try {
     const res = await fetch(`${LLM_URL}/chat/completions`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${LLM_KEY}`,
+        Authorization: BIFROST_AUTH === 'basic' ? `Basic ${LLM_KEY}` : `Bearer ${LLM_KEY}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -238,16 +214,8 @@ async function evaluateWithLLM(claim, evidence, nowYear) {
   }
 }
 
-const SCORE = { FRESH: 100, UNCONFIRMED: 50, STALE: 15, CONTRADICTED: 0 }
-function verdictLabel(index) {
-  if (index >= 80) return 'Fit to Bottle'
-  if (index >= 55) return 'Cellar With Care'
-  if (index >= 30) return 'Pour It Out'
-  return 'Unfit to Bottle'
-}
-
 // ── Main audit route ────────────────────────────────────────────────────
-app.post('/api/audit', async (req, res) => {
+app.post('/api/audit', auditLimiter, async (req, res) => {
   const started = Date.now()
   const text = String(req.body?.text || '').slice(0, 6000)
   if (!text.trim()) return res.status(400).json({ error: 'text is required' })
@@ -262,18 +230,42 @@ app.post('/api/audit', async (req, res) => {
   try {
     const reports = await Promise.all(
       claims.map(async (c) => {
-        // Strip "noise" words so the search query stays precise
-        const query = c.claim.replace(/^(the|a|an)\s+/i, '').slice(0, 180)
+        // Primary query: the cleaned claim. Fallback: compact keywords — tried
+        // only when the primary search errors out or comes back empty.
+        // Version claims additionally get a first attempt restricted to the
+        // official vendor domains, so "Windows 12" is answered by microsoft.com
+        // rather than by rumor blogs (jury fix V4).
+        const queries = buildQueries(c.claim)
+        const officialDomains = domainsForClaim(c.claim)
         let evidence = []
-        try {
-          evidence = await searchEvidence(query)
-        } catch {
-          evidence = []
+        let searchError = null
+        const attempts = officialDomains
+          ? queries.flatMap((q) => [
+              { q, domains: officialDomains },
+              { q, domains: null },
+            ])
+          : queries.map((q) => ({ q, domains: null }))
+        for (const { q, domains } of attempts) {
+          try {
+            evidence = await searchEvidence(q, 4, domains)
+            if (evidence.length > 0) break
+          } catch (err) {
+            if (!searchError) searchError = err.message
+          }
         }
         // Prefer the LLM verdict; fall back to the date heuristic on any failure.
-        const v = (await evaluateWithLLM(c.claim, evidence, nowYear)) || {
-          ...verdictFromEvidence(c.claim, evidence, nowYear),
+        let v = (await evaluateWithLLM(c.claim, evidence, nowYear)) || {
+          ...verdictFromEvidence(c.claim, evidence, nowYear, searchError),
           evaluator: 'heuristic',
+        }
+        // Vendor-confidence cap: a FRESH version claim with no official vendor
+        // source among the results cannot be more than 65% confident.
+        if (c.type === 'VERSION' && v.verdict === 'FRESH' && !hasVendorSource(c.claim, evidence)) {
+          v = {
+            ...v,
+            confidence: Math.min(v.confidence, 65),
+            explanation: `${v.explanation} (no official vendor source among the results — confidence capped).`,
+          }
         }
         return {
           claim: c.claim,
@@ -283,6 +275,7 @@ app.post('/api/audit', async (req, res) => {
           explanation: v.explanation,
           fresher: v.fresher,
           evaluator: v.evaluator,
+          searchError: evidence.length === 0 ? searchError : null,
           evidence: evidence.slice(0, 4),
         }
       })
@@ -290,12 +283,16 @@ app.post('/api/audit', async (req, res) => {
 
     const index =
       reports.length > 0
-        ? Math.round(reports.reduce((acc, c) => acc + SCORE[c.verdict], 0) / reports.length)
+        ? Math.round(
+            reports.reduce((acc, c) => acc + { FRESH: 100, UNCONFIRMED: 50, STALE: 15, CONTRADICTED: 0 }[c.verdict], 0) /
+              reports.length
+          )
         : 0
     const aiAssessed = reports.filter((c) => c.evaluator === 'llm').length
 
     return res.json({
       mode: 'live',
+      gateway: BIFROST_URL ? 'bifrost' : 'direct',
       aiAssessed,
       examinedAt: new Date().toISOString(),
       elapsedSec: Math.round(((Date.now() - started) / 1000) * 10) / 10,
@@ -334,6 +331,8 @@ app.listen(PORT, () => {
   console.log(`[veritas] server on http://localhost:${PORT}`)
   console.log(
     `[veritas] mode: ${TAVILY_KEY ? 'LIVE (Tavily)' : 'DEMO (no TAVILY_API_KEY)'}` +
-      (LLM_KEY ? ` | LLM assessor: ${LLM_MODEL}` : ' | LLM assessor: off (date heuristic)')
+      (LLM_KEY
+        ? ` | assessor: ${LLM_MODEL} via ${BIFROST_URL ? `Bifrost gateway (${BIFROST_AUTH} auth)` : 'direct endpoint'}`
+        : ' | assessor: off (date heuristic)')
   )
 })

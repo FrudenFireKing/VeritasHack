@@ -13,12 +13,16 @@ function indexColor(index) {
   return '#c47a5a'
 }
 
-export default function Archive({ items }) {
+export default function Archive({ items, onOpen }) {
   return (
     <section id="archive" className="max-w-6xl mx-auto px-4 md:px-6 py-12 scroll-mt-20">
       <div className="panel p-6 md:p-10">
         <p className="eyebrow">The atelier archive</p>
         <h2 className="font-display text-4xl md:text-5xl text-cream mt-3">Recent batches</h2>
+        <p className="mt-3 max-w-xl text-sm text-muted-foreground leading-relaxed">
+          Every batch is stored with its full report — reopen one and every verdict,
+          explanation and source stays exactly as it was examined.
+        </p>
 
         <div className="rule my-7" />
 
@@ -51,6 +55,15 @@ export default function Archive({ items }) {
                 >
                   {item.index}
                 </span>
+                {item.report && onOpen && (
+                  <button
+                    onClick={() => onOpen(item)}
+                    aria-label={`Reopen batch ${String(items.length - i).padStart(2, '0')}`}
+                    className="px-3 py-1.5 border border-border text-[10px] tracking-[0.14em] uppercase text-cream-dim hover:text-cream hover:border-olive-line-strong transition-colors"
+                  >
+                    Reopen
+                  </button>
+                )}
               </li>
             ))}
           </ul>

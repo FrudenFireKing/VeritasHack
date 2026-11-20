@@ -35,7 +35,7 @@ function StepIcon({ state, num }) {
   )
 }
 
-export default function Lab({ onArchived }) {
+export default function Lab({ onArchived, restored }) {
   const [mode, setMode] = useState('demo')
   const [tab, setTab] = useState('paste')
   const [question, setQuestion] = useState('')
@@ -48,6 +48,16 @@ export default function Lab({ onArchived }) {
   useEffect(() => {
     checkMode().then(setMode)
   }, [])
+
+  // Reopen a batch from the archive: bring the full stored report back on stage.
+  useEffect(() => {
+    if (restored?.item?.report) {
+      setAuditing(false)
+      setStep(-1)
+      setReport(restored.item.report)
+      if (restored.item.source) setText(restored.item.source)
+    }
+  }, [restored?.nonce])
 
   async function startAudit(sourceText) {
     setAuditing(true)
@@ -132,9 +142,16 @@ export default function Lab({ onArchived }) {
 
         {tab === 'assistant' && (
           <div className="mt-6">
-            <label htmlFor="question" className="eyebrow block mb-2.5">
-              Your question to the assistant
-            </label>
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-2.5">
+              <label htmlFor="question" className="eyebrow">
+                Your question to the assistant
+              </label>
+              {/* Honesty marker (jury fix W10): the assistant is scripted even in
+                  live mode — its answers are pre-written to showcase stale facts. */}
+              <span className="px-2.5 py-1 border border-gold text-[10px] tracking-[0.14em] uppercase text-gold">
+                Scripted demo assistant · not a live model
+              </span>
+            </div>
             <input
               id="question"
               type="text"
@@ -144,6 +161,10 @@ export default function Lab({ onArchived }) {
               maxLength={300}
               className="w-full bg-olive-surface-2 border border-input px-4 py-3.5 text-sm text-cream outline-none focus:border-sage transition-colors"
             />
+            <p className="mt-2 text-xs text-muted-foreground leading-relaxed">
+              The assistant replays pre-written answers, deliberately seeded with outdated facts — a
+              realistic specimen for the audit. Editing its answer above is encouraged before running.
+            </p>
           </div>
         )}
 

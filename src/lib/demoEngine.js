@@ -7,6 +7,7 @@
 
 import { extractClaims } from './extract.js'
 import { matchRule } from './demoArchive.js'
+import { SCORE, verdictLabel } from './audit-core.js'
 
 export const VERDICT_META = {
   FRESH: { label: 'FRESH', color: '#a3b18a' },
@@ -15,16 +16,8 @@ export const VERDICT_META = {
   UNCONFIRMED: { label: 'UNCONFIRMED', color: '#b9b9a2' },
 }
 
-// Verdict "cost" for the 0–100 freshness index
-const SCORE = { FRESH: 100, UNCONFIRMED: 50, STALE: 15, CONTRADICTED: 0 }
-
-/** Overall batch grade — on the atelier's wine scale. */
-export function verdictLabel(index) {
-  if (index >= 80) return 'Fit to Bottle'
-  if (index >= 55) return 'Cellar With Care'
-  if (index >= 30) return 'Pour It Out'
-  return 'Unfit to Bottle'
-}
+/** Overall batch grade — on the atelier's wine scale (re-exported from audit-core). */
+export { verdictLabel }
 
 export function verdictSummary(index) {
   if (index >= 80)
@@ -60,7 +53,9 @@ export function auditText(text) {
   return {
     mode: 'demo',
     examinedAt: new Date().toISOString(),
-    elapsedSec: Math.round(((Date.now() - started) / 1000 + 2.4 + Math.random() * 1.5) * 10) / 10,
+    // Honest stopwatch (jury fix W10): no artificial padding — the demo engine
+    // really does finish in a fraction of a second, and the report says so.
+    elapsedSec: Math.round(((Date.now() - started) / 1000) * 10) / 10,
     index,
     verdictLabel: verdictLabel(index),
     summary: verdictSummary(index),
@@ -111,6 +106,10 @@ export function loadArchive() {
   }
 }
 
+/**
+ * Stores the FULL report next to the ledger entry (jury fix W11) — a batch can
+ * be reopened from the archive and every verdict and source stays inspectable.
+ */
 export function pushArchive(report, sourceText) {
   const entry = {
     id: `demo-${Date.now().toString(36)}`,
@@ -118,6 +117,8 @@ export function pushArchive(report, sourceText) {
     mode: report.mode,
     index: report.index,
     excerpt: String(sourceText || '').slice(0, 120),
+    source: String(sourceText || ''),
+    report,
   }
   const next = [entry, ...loadArchive()].slice(0, MAX_ARCHIVE)
   try {
